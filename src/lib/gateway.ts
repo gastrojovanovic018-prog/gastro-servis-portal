@@ -16,11 +16,33 @@ const TIMEOUT_MS = 20_000;
 type GatewaySession = { access: string; refresh: string; expires: number };
 type GatewayBody = Record<string, unknown> & { session?: GatewaySession; code?: string; message?: string };
 
+/** Tajna mora biti jedan red bez razmaka; vrednost se nikad ne ispisuje u logove. */
+function secret(name: string, minLength: number): string | null {
+  const value = (process.env[name] ?? "").trim();
+  if (!value) return minLength === 0 ? "" : null;
+  if (/\s/.test(value)) {
+    console.error(`Servis portal: ${name} sadrži razmak ili prelom reda — upišite ga kao jedan red.`);
+    return null;
+  }
+  if (value.length < minLength) {
+    console.error(`Servis portal: ${name} je kraći od ${minLength} znakova.`);
+    return null;
+  }
+  return value;
+}
+
 function config() {
-  const url = (process.env.GASTRO_CONTROL_URL ?? "").replace(/\/+$/, "");
-  const key = process.env.PORTAL_GATEWAY_KEY ?? "";
-  if (!/^https?:\/\//.test(url) || key.length < 32) return null;
-  return { url, key, bypass: process.env.VERCEL_PROTECTION_BYPASS ?? "" };
+  const url = (process.env.GASTRO_CONTROL_URL ?? "").trim().replace(/\/+$/, "");
+  const key = secret("PORTAL_GATEWAY_KEY", 32);
+  const bypass = secret("VERCEL_PROTECTION_BYPASS", 0);
+  if (!/^https?:\/\//.test(url) || key === null || bypass === null) return null;
+  return { url, key, bypass };
+}
+
+/** Opis greške bez sadržaja zahteva (zaglavlja mogu da nose tajne). */
+function safeError(error: unknown) {
+  if (error instanceof Error) return error.name === "TimeoutError" ? "isteklo vreme čekanja" : error.name;
+  return "nepoznata greška";
 }
 
 function cookieOptions(maxAge: number) {
@@ -56,7 +78,7 @@ const unavailable = () =>
 export async function forwardToGateway(request: NextRequest, payload: Record<string, unknown>): Promise<NextResponse> {
   const cfg = config();
   if (!cfg) {
-    console.error("Servis portal: GASTRO_CONTROL_URL ili PORTAL_GATEWAY_KEY nije podešen.");
+    console.error("Servis portal: GASTRO_CONTROL_URL, PORTAL_GATEWAY_KEY ili VERCEL_PROTECTION_BYPASS nije ispravno podešen.");
     return unavailable();
   }
 
@@ -91,7 +113,7 @@ export async function forwardToGateway(request: NextRequest, payload: Record<str
     }
     body = (await response.json()) as GatewayBody;
   } catch (error) {
-    console.error("Servis portal: gateway nije dostupan.", error);
+    console.error(`Servis portal: gateway nije dostupan (${safeError(error)}).`);
     return unavailable();
   }
 
